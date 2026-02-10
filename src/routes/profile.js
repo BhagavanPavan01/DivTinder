@@ -2,7 +2,7 @@ const express = require("express")
 const { userAuth } = require("../middlewares/auth");
 const profileRouter = express.Router();
 const {validateEditProfileData} = require("../utils/validator");
-
+const crypto = require("crypto");
 
 
 // =============== User Profile API to retrieve the user data from DB.
@@ -32,6 +32,34 @@ profileRouter.patch("/profile/edit", userAuth, async (req, res) => {
     res.send(`${loggedInUser.firstName}, your profile updated successfully`);
   }catch(err){
     res.status(400).send("ERROR : " + err.message);
+  }
+});
+
+// ======================= User Forgot Password
+
+profileRouter.post("/profile/forgot", async (req, res) => {
+  try {
+    const { emailId } = req.body;
+
+    const user = await User.findOne({ emailId });
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+
+    user.resetToken = resetToken;
+    user.resetTokenExpiry = Date.now() + 5 * 60 * 1000; // 5 minutes
+    await user.save();
+
+    // send email (example)
+    const resetLink = `http://localhost:3000/reset-password/${resetToken}`;
+    console.log("Reset link:", resetLink);
+
+    res.send({ message: "Password reset link sent" });
+
+  } catch (err) {
+    res.status(500).send({ error: err.message });
   }
 });
 

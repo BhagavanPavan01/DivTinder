@@ -8,6 +8,7 @@ const userSchema = mongoose.Schema({
     firstName: {
         type: String,
         required: true,
+        index: true,
     },
     lastName: {
         type: String
@@ -71,6 +72,11 @@ const userSchema = mongoose.Schema({
         timestamps: true,
     }
 );
+
+// Creating index for searching the data in DB speed
+
+userSchema.index({firstName : 1, lastName : 1});
+userSchema.index({gender : 1});
 
 // Creating the own user JWT token 
 
