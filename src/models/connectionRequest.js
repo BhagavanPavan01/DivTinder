@@ -28,7 +28,7 @@ const connectionRequestSchema = new mongoose.Schema(
 
 // To search the user connection details smooth and speed the "indexing" is very important
 
-connectionRequestSchema.index({ formUserId: 1, toUserId: 1});
+connectionRequestSchema.index({ fromUserId: 1, toUserId: 1});
 
 // To check the Schema level validation if the user can send same user (send itself) it will handle safely using <<<<<"pre">>>>> throw an new error
 
