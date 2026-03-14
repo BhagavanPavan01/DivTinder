@@ -12,7 +12,7 @@ authRouter.post("/Signup", async (req, res) => {
     
     // Validation of the data
     validateSignupData(req);
-    const {firstName,lastName,emailId,password} = req.body;
+    const {firstName,lastName,emailId,password,age,skills,phoneNumber,gender,about,photoUrl} = req.body;
     
     // Encryptin the password using the  hash function  in the bcrypt library...
     const passwordHash = await bcrypt.hash(password, 10);
@@ -20,7 +20,7 @@ authRouter.post("/Signup", async (req, res) => {
     
     // Creating a new instance of the User model
     const user = new User({
-      firstName,lastName,emailId,password: passwordHash,
+      firstName,lastName,emailId,password: passwordHash,age,skills,phoneNumber,gender,about,photoUrl
     });
     
     await user.save();
@@ -51,7 +51,8 @@ authRouter.post("/login",async(req,res) =>{
       //  console.log(token);     // To checking the User
       
       res.cookie("token", token, {expires: new Date(Date.now() + 7 * 3600000),});
-      res.send("Login successfully...!");
+      res.send("Login successfully...!");  // output used for backend in postman
+      // res.send(user);  // output used for frontend
     } else {
       throw new Error("Password is Incorrect...!")
     }

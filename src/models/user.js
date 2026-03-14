@@ -34,25 +34,24 @@ const userSchema = mongoose.Schema({
     },
     gender: {
         type: String,
-        validate(value) {
-            if (!["male", "female", "others"].includes(value)) {
-                res.send("Please Enter the Gender...!")
-            }
-        },
+        enum: ["male", "female", "others"],
+        required: true
     },
     photoUrl: {
         type: String,
-        // default: "https://www.clipartmax.com/png/full/231-2318072_if-you-are-self-employed-passport-size-photo-cartoon.png",
         validate(value) {
-            if (!validator.isURL(value)) {
-                throw new Error("Enter Valid Photo URL...!" + value)
+            if (value && !validator.isURL(value)) {
+                throw new Error("Enter Valid Photo URL!");
             }
         }
     },
     phoneNumber: {
-        type: Number,
-        min: 10,
-        max: 10
+        type: String,
+        validate(value) {
+            if (value && value.length !== 10) {
+                throw new Error("Phone number must be 10 digits");
+            }
+        }
     },
     skills: {
         type: [String],
@@ -75,14 +74,14 @@ const userSchema = mongoose.Schema({
 
 // Creating index for searching the data in DB speed
 
-userSchema.index({firstName : 1, lastName : 1});
-userSchema.index({gender : 1});
+userSchema.index({ firstName: 1, lastName: 1 });
+userSchema.index({ gender: 1 });
 
 // Creating the own user JWT token 
 
 userSchema.methods.getJWT = async function () {
     const user = this;
-    const token = await jwt.sign({ _id: user._id }, "PavanDiveTinder@token$420", {expiresIn: "7d"});
+    const token = await jwt.sign({ _id: user._id }, "PavanDiveTinder@token$420", { expiresIn: "7d" });
     return token;
 }
 
@@ -92,9 +91,9 @@ userSchema.methods.validatePassword = async function (passwordInputByUser) {
     const user = this;
     const passwordHash = user.password;
 
-    const isPasswordValid= await bcrypt.compare(passwordInputByUser,passwordHash);
+    const isPasswordValid = await bcrypt.compare(passwordInputByUser, passwordHash);
     return isPasswordValid;
-    
+
 }
 
 const user = mongoose.model("User", userSchema);
