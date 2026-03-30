@@ -64,6 +64,14 @@ const userSchema = mongoose.Schema({
     about: {
         type: String,
         default: "This is a default about of the user."
+    },// Add to your userSchema
+    isOnline: {
+        type: Boolean,
+        default: false
+    },
+    lastSeen: {
+        type: Date,
+        default: Date.now
     }
 
 },
