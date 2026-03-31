@@ -16,20 +16,13 @@ async function areConnected(userId1, userId2) {
   return !!connection;
 }
 
-// ==================== WHATSAPP-STYLE API ENDPOINTS ====================
+// ==================== CHAT API ENDPOINTS ====================
 
-// GET /api/chat - Get all chats for sidebar (WhatsApp style)
-router.get('/chat', userAuth, async (req, res) => {
+// GET /api/chats - Get all chats for logged-in user (WhatsApp sidebar)
+router.get('/chats', userAuth, async (req, res) => {
   try {
-    const chats = await Chat.find({
-      participants: req.user._id,
-      isActive: true
-    })
-    .populate('participants', 'firstName lastName photoUrl gender age emailId')
-    .populate('lastMessage.senderId', 'firstName lastName photoUrl')
-    .sort({ updatedAt: -1 });
+    const chats = await Chat.getUserChats(req.user._id);
     
-    // Format chats with other user info
     const formattedChats = [];
     
     for (const chat of chats) {
@@ -38,66 +31,68 @@ router.get('/chat', userAuth, async (req, res) => {
         p => p._id.toString() !== req.user._id.toString()
       );
       
-      if (!otherUser) continue;
+      if (!otherUser && chat.type !== 'group') continue;
       
       // For private chats, verify connection status
-      let isConnected = true;
-      let connectionStatus = 'active';
-      
+      let connectionStatus = 'connected';
       if (chat.type === 'private') {
-        const connection = await ConnectionRequest.findOne({
-          $or: [
-            { fromUserId: req.user._id, toUserId: otherUser._id, status: 'accepted' },
-            { fromUserId: otherUser._id, toUserId: req.user._id, status: 'accepted' }
-          ]
-        });
-        
-        isConnected = !!connection;
+        const isConnected = await areConnected(req.user._id, otherUser._id);
         connectionStatus = isConnected ? 'connected' : 'disconnected';
         
-        // Don't show disconnected chats unless they have message history
+        // Don't show disconnected chats with no messages
         if (!isConnected && chat.messages.length === 0) {
           continue;
         }
       }
       
+      const unreadCount = chat.getUnreadCount(req.user._id);
+      
       formattedChats.push({
         chatId: chat._id,
         type: chat.type,
-        user: {
+        groupName: chat.groupName,
+        groupAvatar: chat.groupAvatar,
+        user: chat.type === 'private' ? {
           _id: otherUser._id,
           firstName: otherUser.firstName,
           lastName: otherUser.lastName,
           photoUrl: otherUser.photoUrl,
-          emailId: otherUser.emailId,
-          gender: otherUser.gender,
-          age: otherUser.age
-        },
+          emailId: otherUser.emailId
+        } : null,
         lastMessage: chat.lastMessage ? {
           text: chat.lastMessage.text,
-          senderId: chat.lastMessage.senderId,
-          senderName: chat.lastMessage.senderId?.firstName || 'Unknown',
-          createdAt: chat.lastMessage.createdAt,
-          isOwn: chat.lastMessage.senderId?._id?.toString() === req.user._id.toString()
+          senderName: chat.lastMessage.senderName,
+          timestamp: chat.lastMessage.timestamp,
+          isOwn: chat.lastMessage.senderId?.toString() === req.user._id.toString(),
+          isDeleted: chat.lastMessage.isDeleted || false
         } : null,
-        unreadCount: chat.getUnreadCount ? chat.getUnreadCount(req.user._id) : 0,
+        unreadCount: unreadCount,
         updatedAt: chat.updatedAt,
-        connectionStatus
+        connectionStatus,
+        isPinned: chat.pinnedBy?.includes(req.user._id) || false,
+        isMuted: chat.mutedBy?.some(m => m.userId.toString() === req.user._id.toString() && (!m.until || m.until > new Date()))
       });
     }
+    
+    // Sort: Pinned first, then by updatedAt
+    formattedChats.sort((a, b) => {
+      if (a.isPinned && !b.isPinned) return -1;
+      if (!a.isPinned && b.isPinned) return 1;
+      return new Date(b.updatedAt) - new Date(a.updatedAt);
+    });
     
     res.json({
       success: true,
       data: formattedChats
     });
   } catch (error) {
-    console.error('Error fetching chat list:', error);
+    console.error('Error fetching chats:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// GET /api/chat/:chatId - Get specific chat with messages
-router.get('/chat/:chatId', userAuth, async (req, res) => {
+// GET /api/chats/:chatId - Get specific chat with messages
+router.get('/chats/:chatId', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { page = 1, limit = 50 } = req.query;
@@ -106,73 +101,66 @@ router.get('/chat/:chatId', userAuth, async (req, res) => {
       _id: chatId,
       participants: req.user._id,
       isActive: true
-    }).populate('participants', 'firstName lastName photoUrl gender age emailId');
+    }).populate('participants', 'firstName lastName photoUrl emailId');
     
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
     
-    // Get other user info
-    const otherUser = chat.participants.find(
+    // Get other user info for private chats
+    const otherUser = chat.type === 'private' ? chat.participants.find(
       p => p._id.toString() !== req.user._id.toString()
-    );
+    ) : null;
     
-    // Check connection status
-    let connectionStatus = 'active';
-    if (chat.type === 'private') {
-      const connection = await ConnectionRequest.findOne({
-        $or: [
-          { fromUserId: req.user._id, toUserId: otherUser._id, status: 'accepted' },
-          { fromUserId: otherUser._id, toUserId: req.user._id, status: 'accepted' }
-        ]
-      });
-      connectionStatus = connection ? 'connected' : 'disconnected';
+    // Check connection status for private chats
+    let connectionStatus = 'connected';
+    if (chat.type === 'private' && otherUser) {
+      const isConnected = await areConnected(req.user._id, otherUser._id);
+      connectionStatus = isConnected ? 'connected' : 'disconnected';
     }
     
-    // Get messages with pagination (oldest first)
-    let messages = [...chat.messages];
+    // Get messages with pagination (oldest first - for proper display)
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    const totalMessages = messages.length;
+    const totalMessages = chat.messages.length;
     
-    // Get paginated messages
-    const paginatedMessages = messages.slice(skip, skip + parseInt(limit));
+    // Get paginated messages (oldest first)
+    const paginatedMessages = chat.messages.slice(skip, skip + parseInt(limit));
     
-    // Populate sender info for messages
-    const populatedMessages = await Promise.all(
-      paginatedMessages.map(async (msg) => {
-        const sender = await User.findById(msg.senderId).select('firstName lastName photoUrl');
-        const isReadByCurrentUser = msg.readBy.some(
-          r => r.userId.toString() === req.user._id.toString()
-        );
-        
-        return {
-          _id: msg._id,
-          text: msg.text,
-          sender: sender || { firstName: 'Unknown', lastName: '' },
-          senderId: msg.senderId,
-          createdAt: msg.createdAt,
-          readBy: msg.readBy,
-          isRead: isReadByCurrentUser,
-          isEdited: msg.isEdited || false,
-          editedAt: msg.editedAt,
-          isOwn: msg.senderId.toString() === req.user._id.toString()
-        };
-      })
-    );
+    // Format messages
+    const formattedMessages = paginatedMessages.map(msg => ({
+      _id: msg._id,
+      text: msg.text,
+      senderId: msg.senderId,
+      createdAt: msg.createdAt,
+      isRead: msg.readBy?.some(r => r.userId?.toString() === req.user._id.toString()) || false,
+      isDelivered: msg.deliveredTo?.some(d => d.userId?.toString() === req.user._id.toString()) || false,
+      isOwn: msg.senderId?.toString() === req.user._id.toString(),
+      isEdited: msg.isEdited || false,
+      isDeleted: msg.isDeleted || false,
+      replyTo: msg.replyTo,
+      attachments: msg.attachments || []
+    }));
+    
+    // Mark messages as read (background task, don't await)
+    chat.markAsRead(req.user._id).catch(console.error);
     
     res.json({
       success: true,
       data: {
         chatId: chat._id,
         type: chat.type,
+        groupName: chat.groupName,
+        groupAvatar: chat.groupAvatar,
+        groupAdmins: chat.groupAdmins,
         user: otherUser,
-        messages: populatedMessages,
+        messages: formattedMessages,
         connectionStatus,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
           total: totalMessages,
-          pages: Math.ceil(totalMessages / parseInt(limit))
+          pages: Math.ceil(totalMessages / parseInt(limit)),
+          hasMore: skip + parseInt(limit) < totalMessages
         }
       }
     });
@@ -182,124 +170,65 @@ router.get('/chat/:chatId', userAuth, async (req, res) => {
   }
 });
 
-// POST /api/chat/private/:userId - Create or get private chat
-router.post('/chat/private/:userId', userAuth, async (req, res) => {
+// POST /api/chats/private/:userId - Create or get private chat
+router.post('/chats/private/:userId', userAuth, async (req, res) => {
   try {
     const { userId } = req.params;
     
-    // Check if user exists
-    const otherUser = await User.findById(userId).select('firstName lastName photoUrl emailId gender age');
+    const otherUser = await User.findById(userId).select('firstName lastName photoUrl emailId');
     if (!otherUser) {
       return res.status(404).json({ error: 'User not found' });
     }
     
-    // Check if users are connected
-    const connection = await ConnectionRequest.findOne({
-      $or: [
-        { fromUserId: req.user._id, toUserId: userId, status: 'accepted' },
-        { fromUserId: userId, toUserId: req.user._id, status: 'accepted' }
-      ]
-    });
-    
-    if (!connection) {
+    const isConnected = await areConnected(req.user._id, userId);
+    if (!isConnected) {
       return res.status(403).json({ 
         error: 'You can only chat with your accepted connections',
         code: 'NOT_CONNECTED'
       });
     }
     
-    // Find or create private chat
-    let chat = await Chat.findOne({
-      type: 'private',
-      participants: { $all: [req.user._id, userId], $size: 2 },
-      isActive: true
-    }).populate('participants', 'firstName lastName photoUrl emailId gender age');
+    const chat = await Chat.findOrCreatePrivateChat(req.user._id, userId);
     
-    if (!chat) {
-      // Create new chat
-      chat = await Chat.create({
-        type: 'private',
-        participants: [req.user._id, userId],
-        messages: [],
-        createdBy: req.user._id
-      });
-      await chat.populate('participants', 'firstName lastName photoUrl emailId gender age');
-    }
-    
-    // Get messages in chronological order
-    const messages = chat.messages || [];
-    
-    // Mark messages as read when opening chat
-    if (chat.markAsRead) {
-      await chat.markAsRead(req.user._id);
-    }
-    
-    // Get other user info
-    const chatOtherUser = chat.participants.find(
+    const otherUserData = chat.participants.find(
       p => p._id.toString() !== req.user._id.toString()
     );
+    
+    const formattedMessages = chat.messages.map(msg => ({
+      _id: msg._id,
+      text: msg.text,
+      senderId: msg.senderId,
+      createdAt: msg.createdAt,
+      isRead: msg.readBy?.some(r => r.userId?.toString() === req.user._id.toString()) || false,
+      isOwn: msg.senderId?.toString() === req.user._id.toString(),
+      isEdited: msg.isEdited || false,
+      isDeleted: msg.isDeleted || false
+    }));
     
     res.json({
       success: true,
       data: {
         chatId: chat._id,
         type: chat.type,
-        user: chatOtherUser,
-        messages: messages.map(msg => ({
-          ...msg.toObject(),
-          isOwn: msg.senderId.toString() === req.user._id.toString()
-        })),
+        user: otherUserData,
+        messages: formattedMessages,
         connectionStatus: 'connected'
       }
     });
   } catch (error) {
     console.error('Error creating private chat:', error);
-    
-    // Handle duplicate key error
-    if (error.code === 11000) {
-      try {
-        const existingChat = await Chat.findOne({
-          type: 'private',
-          participants: { $all: [req.user._id, req.params.userId], $size: 2 },
-          isActive: true
-        }).populate('participants', 'firstName lastName photoUrl emailId gender age');
-        
-        if (existingChat) {
-          const otherUser = existingChat.participants.find(
-            p => p._id.toString() !== req.user._id.toString()
-          );
-          
-          return res.json({
-            success: true,
-            data: {
-              chatId: existingChat._id,
-              type: existingChat.type,
-              user: otherUser,
-              messages: existingChat.messages.map(msg => ({
-                ...msg.toObject(),
-                isOwn: msg.senderId.toString() === req.user._id.toString()
-              })),
-              connectionStatus: 'connected'
-            }
-          });
-        }
-      } catch (fetchError) {
-        console.error('Error fetching existing chat:', fetchError);
-      }
-    }
-    
-    res.status(500).json({ error: 'Failed to create or fetch chat. Please try again.' });
+    res.status(500).json({ error: error.message });
   }
 });
 
-// POST /api/chat/:chatId/message - Send message to chat
-router.post('/chat/:chatId/message', userAuth, async (req, res) => {
+// POST /api/chats/:chatId/messages - Send message to chat
+router.post('/chats/:chatId/messages', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    const { text } = req.body;
+    const { text, replyTo, attachments } = req.body;
     
-    if (!text || !text.trim()) {
-      return res.status(400).json({ error: 'Message text is required' });
+    if ((!text || !text.trim()) && (!attachments || attachments.length === 0)) {
+      return res.status(400).json({ error: 'Message text or attachment is required' });
     }
     
     const chat = await Chat.findById(chatId);
@@ -308,22 +237,16 @@ router.post('/chat/:chatId/message', userAuth, async (req, res) => {
       return res.status(404).json({ error: 'Chat not found' });
     }
     
-    // Check if user is participant
     if (!chat.participants.includes(req.user._id)) {
       return res.status(403).json({ error: 'You are not a participant in this chat' });
     }
     
-    // For private chats, verify they are still connected
+    // For private chats, verify connection still exists
     if (chat.type === 'private') {
       const otherUserId = chat.participants.find(id => id.toString() !== req.user._id.toString());
-      const connection = await ConnectionRequest.findOne({
-        $or: [
-          { fromUserId: req.user._id, toUserId: otherUserId, status: 'accepted' },
-          { fromUserId: otherUserId, toUserId: req.user._id, status: 'accepted' }
-        ]
-      });
+      const isConnected = await areConnected(req.user._id, otherUserId);
       
-      if (!connection) {
+      if (!isConnected) {
         return res.status(403).json({ 
           error: 'You are no longer connected with this user',
           code: 'NOT_CONNECTED'
@@ -331,10 +254,7 @@ router.post('/chat/:chatId/message', userAuth, async (req, res) => {
       }
     }
     
-    // Add message
-    const newMessage = await chat.addMessage(req.user._id, text.trim());
-    
-    // Get sender info
+    const newMessage = await chat.addMessage(req.user._id, text?.trim() || '', replyTo, attachments || []);
     const sender = await User.findById(req.user._id).select('firstName lastName photoUrl');
     
     res.json({
@@ -345,41 +265,37 @@ router.post('/chat/:chatId/message', userAuth, async (req, res) => {
         sender: sender,
         senderId: req.user._id,
         createdAt: newMessage.createdAt,
-        readBy: newMessage.readBy,
         isRead: false,
+        isDelivered: false,
         isEdited: false,
-        isOwn: true
+        isOwn: true,
+        replyTo: newMessage.replyTo,
+        attachments: newMessage.attachments
       }
     });
   } catch (error) {
     console.error('Error sending message:', error);
-    
-    if (error.name === 'VersionError') {
-      return res.status(409).json({ 
-        error: 'Chat was modified. Please refresh and try again.',
-        code: 'VERSION_CONFLICT'
-      });
-    }
-    
     res.status(500).json({ error: error.message });
   }
 });
 
-// PUT /api/chat/:chatId/read - Mark messages as read
-router.put('/chat/:chatId/read', userAuth, async (req, res) => {
+// PUT /api/chats/:chatId/read - Mark messages as read
+router.put('/chats/:chatId/read', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
+    const { messageIds } = req.body;
     
     const chat = await Chat.findOne({
       _id: chatId,
-      participants: req.user._id
+      participants: req.user._id,
+      isActive: true
     });
     
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
     
-    const markedCount = await chat.markAsRead(req.user._id);
+    const markedCount = await chat.markAsRead(req.user._id, messageIds);
     
     res.json({
       success: true,
@@ -392,10 +308,144 @@ router.put('/chat/:chatId/read', userAuth, async (req, res) => {
   }
 });
 
-// DELETE /api/chat/:chatId/message/:messageId - Delete message (optional)
-router.delete('/chat/:chatId/message/:messageId', userAuth, async (req, res) => {
+// PUT /api/chats/:chatId/delivered - Mark messages as delivered
+router.put('/chats/:chatId/delivered', userAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const { messageIds } = req.body;
+    
+    const chat = await Chat.findOne({
+      _id: chatId,
+      participants: req.user._id,
+      isActive: true
+    });
+    
+    if (!chat) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+    
+    const markedCount = await chat.markAsDelivered(req.user._id, messageIds);
+    
+    res.json({
+      success: true,
+      message: `${markedCount} messages marked as delivered`,
+      count: markedCount
+    });
+  } catch (error) {
+    console.error('Error marking messages as delivered:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/chats/:chatId/messages/:messageId - Delete message
+router.delete('/chats/:chatId/messages/:messageId', userAuth, async (req, res) => {
   try {
     const { chatId, messageId } = req.params;
+    
+    const chat = await Chat.findOne({
+      _id: chatId,
+      participants: req.user._id,
+      isActive: true
+    });
+    
+    if (!chat) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+    
+    const deletedMessage = await chat.deleteMessage(req.user._id, messageId);
+    
+    res.json({
+      success: true,
+      message: 'Message deleted successfully',
+      data: deletedMessage
+    });
+  } catch (error) {
+    console.error('Error deleting message:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/chats/:chatId/pin - Pin/Unpin chat
+router.put('/chats/:chatId/pin', userAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const { pin } = req.body; // true = pin, false = unpin
+    
+    const chat = await Chat.findOne({
+      _id: chatId,
+      participants: req.user._id,
+      isActive: true
+    });
+    
+    if (!chat) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+    
+    if (pin) {
+      if (!chat.pinnedBy.includes(req.user._id)) {
+        chat.pinnedBy.push(req.user._id);
+      }
+    } else {
+      chat.pinnedBy = chat.pinnedBy.filter(id => id.toString() !== req.user._id.toString());
+    }
+    
+    await chat.save();
+    
+    res.json({
+      success: true,
+      message: pin ? 'Chat pinned' : 'Chat unpinned'
+    });
+  } catch (error) {
+    console.error('Error pinning chat:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/chats/:chatId/mute - Mute/Unmute chat
+router.put('/chats/:chatId/mute', userAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const { mute, until } = req.body; // mute: true/false, until: Date (optional)
+    
+    const chat = await Chat.findOne({
+      _id: chatId,
+      participants: req.user._id,
+      isActive: true
+    });
+    
+    if (!chat) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+    
+    if (mute) {
+      const muteUntil = until ? new Date(until) : new Date(Date.now() + 8 * 60 * 60 * 1000); // Default 8 hours
+      const existingMute = chat.mutedBy.find(m => m.userId.toString() === req.user._id.toString());
+      
+      if (existingMute) {
+        existingMute.until = muteUntil;
+      } else {
+        chat.mutedBy.push({ userId: req.user._id, until: muteUntil });
+      }
+    } else {
+      chat.mutedBy = chat.mutedBy.filter(m => m.userId.toString() !== req.user._id.toString());
+    }
+    
+    await chat.save();
+    
+    res.json({
+      success: true,
+      message: mute ? 'Chat muted' : 'Chat unmuted'
+    });
+  } catch (error) {
+    console.error('Error muting chat:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/chats/:chatId - Delete/Archive chat
+router.delete('/chats/:chatId', userAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
     
     const chat = await Chat.findOne({
       _id: chatId,
@@ -406,35 +456,23 @@ router.delete('/chat/:chatId/message/:messageId', userAuth, async (req, res) => 
       return res.status(404).json({ error: 'Chat not found' });
     }
     
-    const message = chat.messages.id(messageId);
-    if (!message) {
-      return res.status(404).json({ error: 'Message not found' });
+    // Archive instead of delete (soft delete)
+    if (!chat.archivedBy) {
+      chat.archivedBy = [];
     }
     
-    // Only allow deletion if user is the sender
-    if (message.senderId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ error: 'You can only delete your own messages' });
+    if (!chat.archivedBy.includes(req.user._id)) {
+      chat.archivedBy.push(req.user._id);
     }
     
-    // Check if message is within time limit (e.g., 5 minutes)
-    const messageAge = Date.now() - new Date(message.createdAt).getTime();
-    const fiveMinutes = 5 * 60 * 1000;
-    
-    if (messageAge > fiveMinutes) {
-      return res.status(403).json({ error: 'Messages can only be deleted within 5 minutes of sending' });
-    }
-    
-    // Soft delete by marking as deleted
-    message.text = 'This message was deleted';
-    message.isDeleted = true;
     await chat.save();
     
     res.json({
       success: true,
-      message: 'Message deleted successfully'
+      message: 'Chat archived successfully'
     });
   } catch (error) {
-    console.error('Error deleting message:', error);
+    console.error('Error archiving chat:', error);
     res.status(500).json({ error: error.message });
   }
 });

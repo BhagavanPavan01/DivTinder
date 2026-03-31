@@ -1,13 +1,13 @@
 const express = require("express");
-const http = require("http"); // Add this
-const { Server } = require("socket.io"); // Add this
+const http = require("http");
+const { Server } = require("socket.io");
 const connectDB = require("./config/database");
 const app = express();
 const cookieParser = require("cookie-parser");
 require("dotenv").config();
 const cors = require("cors");
 
-// middlewares
+// Middlewares
 app.use(cors({
   origin: "http://localhost:5173",
   credentials: true,
@@ -15,71 +15,152 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 
-// ========= Managing the Router Or Importing the Routers
+// Import Routes
 const authRouter = require("./routes/auth");
 const profileRouter = require("./routes/profile");
 const requestRouter = require("./routes/request");
 const userRouter = require("./routes/user");
-const chatRouter = require("./routes/chat"); // Add this
+const chatRouter = require("./routes/chat");
 
-// ========= Using these Routes
+// Use Routes
 app.use("/", authRouter);
 app.use("/", profileRouter);
 app.use("/", requestRouter);
 app.use("/", userRouter);
-app.use("/api", chatRouter); // Add this
+app.use("/api", chatRouter);
 
-// ========= Create HTTP Server and Setup Socket.io
-const server = http.createServer(app); // Create HTTP server
-const io = new Server(server, { // Initialize socket.io
+// Create HTTP Server
+const server = http.createServer(app);
+
+// Setup Socket.io
+const io = new Server(server, {
   cors: {
     origin: "http://localhost:5173",
     credentials: true,
+    methods: ["GET", "POST"]
   },
+  transports: ['websocket', 'polling'],
+  allowEIO3: true
 });
 
-// ========= Socket.io Authentication Middleware
+// Socket.io Authentication
 const jwt = require("jsonwebtoken");
 
+// Debug: Check if JWT_SECRET is loaded
+console.log("JWT_SECRET loaded:", process.env.JWT_SECRET ? "✅ YES" : "❌ NO");
+
 io.use((socket, next) => {
-  const token = socket.handshake.auth.token;
+  // Try multiple ways to get the token
+  let token = null;
+  
+  // 1. Try from auth object (most common for socket.io)
+  if (socket.handshake.auth && socket.handshake.auth.token) {
+    token = socket.handshake.auth.token;
+    console.log("Token found in auth");
+  }
+  
+  // 2. Try from headers Authorization
+  if (!token && socket.handshake.headers.authorization) {
+    const authHeader = socket.handshake.headers.authorization;
+    if (authHeader.startsWith('Bearer ')) {
+      token = authHeader.substring(7);
+      console.log("Token found in Authorization header");
+    }
+  }
+  
+  // 3. Try from cookies
+  if (!token && socket.handshake.headers.cookie) {
+    const cookies = socket.handshake.headers.cookie;
+    const match = cookies.match(/token=([^;]+)/);
+    if (match) {
+      token = match[1];
+      console.log("Token found in cookies");
+    }
+  }
+  
   if (!token) {
+    console.log('❌ No token provided for socket connection');
     return next(new Error("Authentication error: No token provided"));
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const JWT_SECRET = process.env.JWT_SECRET;
+    if (!JWT_SECRET) {
+      console.error('❌ JWT_SECRET not found in environment variables!');
+      return next(new Error("Server configuration error"));
+    }
+    
+    const decoded = jwt.verify(token, JWT_SECRET);
     socket.userId = decoded._id;
+    console.log(`✅ Socket authenticated for user: ${socket.userId}`);
     next();
   } catch (err) {
-    return next(new Error("Authentication error: Invalid token"));
+    console.error('❌ Socket authentication error:', err.message);
+    console.error('Token received:', token.substring(0, 20) + '...');
+    return next(new Error(`Authentication error: ${err.message}`));
   }
 });
 
-// ========= Socket.io Connection Handling
-const onlineUsers = new Map(); // userId -> socketId
+// Store online users
+const onlineUsers = new Map();
+const userSockets = new Map();
+const userChatRooms = new Map();
 
 io.on("connection", (socket) => {
-  console.log(`User connected: ${socket.userId}`);
+  console.log(`✅ User connected: ${socket.userId}`);
   onlineUsers.set(socket.userId, socket.id);
+  userSockets.set(socket.id, socket.userId);
+  
+  socket.broadcast.emit("user-online", { userId: socket.userId });
+  socket.join(`user_${socket.userId}`);
 
-  // Join private chat rooms for existing connections
-  socket.on("join-private-chat", (otherUserId) => {
-    const roomId = [socket.userId, otherUserId].sort().join("_");
+  // Load user's existing chats
+  (async () => {
+    try {
+      const Chat = require("./models/chat");
+      const userChats = await Chat.find({
+        participants: socket.userId,
+        isActive: true
+      });
+      
+      for (const chat of userChats) {
+        const roomId = `chat_${chat._id}`;
+        socket.join(roomId);
+        if (!userChatRooms.has(socket.userId)) {
+          userChatRooms.set(socket.userId, new Set());
+        }
+        userChatRooms.get(socket.userId).add(roomId);
+        console.log(`User ${socket.userId} joined room: ${roomId}`);
+      }
+    } catch (error) {
+      console.error('Error loading user chats:', error);
+    }
+  })();
+
+  // Join chat room
+  socket.on("join-chat-room", (chatId) => {
+    const roomId = `chat_${chatId}`;
     socket.join(roomId);
-    console.log(`User ${socket.userId} joined room ${roomId}`);
+    if (!userChatRooms.has(socket.userId)) {
+      userChatRooms.set(socket.userId, new Set());
+    }
+    userChatRooms.get(socket.userId).add(roomId);
+    console.log(`User ${socket.userId} joined chat room: ${roomId}`);
   });
 
-  // Join global chat
-  socket.on("join-global-chat", () => {
-    socket.join("global-chat");
-    console.log(`User ${socket.userId} joined global chat`);
+  // Leave chat room
+  socket.on("leave-chat-room", (chatId) => {
+    const roomId = `chat_${chatId}`;
+    socket.leave(roomId);
+    if (userChatRooms.has(socket.userId)) {
+      userChatRooms.get(socket.userId).delete(roomId);
+    }
+    console.log(`User ${socket.userId} left chat room: ${roomId}`);
   });
 
-
-  // Handle private messages
-  socket.on('private-message', async (data) => {
-    const { toUserId, text, tempId } = data;
+  // Send message
+  socket.on("send-message", async (data) => {
+    const { chatId, text, replyTo, tempId } = data;
     const fromUserId = socket.userId;
 
     try {
@@ -87,62 +168,37 @@ io.on("connection", (socket) => {
       const User = require("./models/user");
       const ConnectionRequest = require("./models/connectionRequest");
 
-      // Check if users are connected
-      const areConnected = async (userId1, userId2) => {
-        const connection = await ConnectionRequest.findOne({
-          $or: [
-            { fromUserId: userId1, toUserId: userId2, status: 'accepted' },
-            { fromUserId: userId2, toUserId: userId1, status: 'accepted' }
-          ]
-        });
-        return !!connection;
-      };
-
-      const isConnected = await areConnected(fromUserId, toUserId);
-      if (!isConnected) {
-        socket.emit('message-error', {
-          error: 'You are not connected with this user',
-          tempId: tempId,
-          code: 'NOT_CONNECTED'
-        });
+      const chat = await Chat.findById(chatId);
+      if (!chat) {
+        socket.emit("message-error", { tempId, error: "Chat not found" });
         return;
       }
 
-      // Find or create chat
-      let chat = await Chat.findOne({
-        type: "private",
-        participants: { $all: [fromUserId, toUserId], $size: 2 },
-      });
-
-      if (!chat) {
-        chat = new Chat({
-          participants: [fromUserId, toUserId],
-          type: "private",
-          messages: [],
-          unreadCount: new Map()
-        });
-        await chat.save();
+      if (!chat.participants.includes(fromUserId)) {
+        socket.emit("message-error", { tempId, error: "Not a participant" });
+        return;
       }
 
-      // Add message with retry logic for version conflicts
-      let retries = 3;
-      let savedMessage = null;
+      if (chat.type === "private") {
+        const otherUserId = chat.participants.find(id => id.toString() !== fromUserId.toString());
+        const connection = await ConnectionRequest.findOne({
+          $or: [
+            { fromUserId: fromUserId, toUserId: otherUserId, status: "accepted" },
+            { fromUserId: otherUserId, toUserId: fromUserId, status: "accepted" }
+          ]
+        });
 
-      while (retries > 0) {
-        try {
-          savedMessage = await chat.addMessage(fromUserId, text);
-          break;
-        } catch (err) {
-          if (err.name === 'VersionError' && retries > 1) {
-            // Refresh the chat document
-            chat = await Chat.findById(chat._id);
-            retries--;
-            continue;
-          }
-          throw err;
+        if (!connection) {
+          socket.emit("message-error", {
+            tempId,
+            error: "You are no longer connected",
+            code: "NOT_CONNECTED"
+          });
+          return;
         }
       }
 
+      const savedMessage = await chat.addMessage(fromUserId, text, replyTo);
       const sender = await User.findById(fromUserId).select("firstName lastName photoUrl");
 
       const messageData = {
@@ -152,179 +208,59 @@ io.on("connection", (socket) => {
         sender: sender,
         createdAt: savedMessage.createdAt,
         chatId: chat._id,
-        tempId: tempId
+        tempId: tempId,
+        replyTo: savedMessage.replyTo,
+        isOwn: true
       };
 
-      // Send to recipient if online
-      const recipientSocketId = onlineUsers.get(toUserId);
-      if (recipientSocketId) {
-        io.to(recipientSocketId).emit("new-private-message", messageData);
-      }
-
-      // Confirm to sender
+      const roomId = `chat_${chat._id}`;
+      io.to(roomId).emit("new-message", messageData);
       socket.emit("message-sent", messageData);
 
     } catch (error) {
-      console.error('Error sending private message:', error);
-      socket.emit("message-error", {
-        error: error.message,
-        tempId: tempId,
-        code: error.code || 'UNKNOWN'
-      });
+      console.error("Error sending message:", error);
+      socket.emit("message-error", { tempId, error: error.message });
     }
   });
 
-  // Handle global messages
-  socket.on("global-message", async (data) => {
-    const { text, tempId } = data;
-    const fromUserId = socket.userId;
-
-    try {
-      const Chat = require("./models/chat");
-      const User = require("./models/user");
-
-      let chat = await Chat.findOne({ type: "global" });
-
-      if (!chat) {
-        chat = new Chat({
-          type: "global",
-          participants: [],
-          messages: [],
-          unreadCount: new Map(),
-        });
-      }
-
-      // Add user to participants if not already
-      if (!chat.participants.includes(fromUserId)) {
-        chat.participants.push(fromUserId);
-      }
-
-      const newMessage = {
-        senderId: fromUserId,
-        text: text,
-        readBy: [],
-      };
-
-      chat.messages.push(newMessage);
-      chat.lastMessage = {
-        text: text,
-        senderId: fromUserId,
-        timestamp: new Date(),
-      };
-
-      // Increment unread count for all participants except sender
-      chat.participants.forEach((participantId) => {
-        if (participantId.toString() !== fromUserId.toString()) {
-          const currentUnread = chat.unreadCount.get(participantId.toString()) || 0;
-          chat.unreadCount.set(participantId.toString(), currentUnread + 1);
-        }
-      });
-
-      await chat.save();
-
-      const savedMessage = chat.messages[chat.messages.length - 1];
-      const sender = await User.findById(fromUserId).select(
-        "firstName lastName photoUrl"
-      );
-
-      const messageData = {
-        _id: savedMessage._id,
-        text: savedMessage.text,
-        senderId: fromUserId,
-        sender: sender,
-        createdAt: savedMessage.createdAt,
-        chatId: chat._id,
-        tempId: tempId,
-      };
-
-      // Broadcast to all in global chat
-      io.to("global-chat").emit("new-global-message", messageData);
-      socket.emit("message-sent", messageData);
-    } catch (error) {
-      console.error("Error sending global message:", error);
-      socket.emit("message-error", {
-        error: error.message,
-        tempId: tempId,
-      });
-    }
+  // Typing indicators
+  socket.on("typing-start", ({ chatId }) => {
+    const roomId = `chat_${chatId}`;
+    socket.to(roomId).emit("user-typing", {
+      userId: socket.userId,
+      chatId: chatId,
+      isTyping: true
+    });
   });
 
-  // Handle typing indicators
-  socket.on("typing-start", (data) => {
-    const { toUserId, chatId } = data;
-    const recipientSocketId = onlineUsers.get(toUserId);
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit("user-typing", {
-        fromUserId: socket.userId,
-        chatId: chatId,
-        isTyping: true,
-      });
-    }
+  socket.on("typing-end", ({ chatId }) => {
+    const roomId = `chat_${chatId}`;
+    socket.to(roomId).emit("user-typing", {
+      userId: socket.userId,
+      chatId: chatId,
+      isTyping: false
+    });
   });
 
-  socket.on("typing-end", (data) => {
-    const { toUserId, chatId } = data;
-    const recipientSocketId = onlineUsers.get(toUserId);
-    if (recipientSocketId) {
-      io.to(recipientSocketId).emit("user-typing", {
-        fromUserId: socket.userId,
-        chatId: chatId,
-        isTyping: false,
-      });
-    }
-  });
-
-  // Handle mark as read
-  socket.on("mark-read", async (data) => {
-    const { chatId, messageIds } = data;
+  // Mark as read
+  socket.on("mark-read", async ({ chatId, messageIds }) => {
     try {
       const Chat = require("./models/chat");
       const chat = await Chat.findOne({
         _id: chatId,
-        participants: socket.userId,
+        participants: socket.userId
       });
 
       if (chat) {
-        // Mark messages as read
-        let updatedCount = 0;
-        for (let message of chat.messages) {
-          if (message.senderId.toString() !== socket.userId.toString()) {
-            const alreadyRead = message.readBy.some(
-              (r) => r.userId.toString() === socket.userId.toString()
-            );
-            if (
-              !alreadyRead &&
-              (!messageIds || messageIds.includes(message._id.toString()))
-            ) {
-              message.readBy.push({
-                userId: socket.userId,
-                readAt: new Date(),
-              });
-              updatedCount++;
-            }
-          }
-        }
-
-        // Reset unread count for this user
-        if (chat.unreadCount) {
-          chat.unreadCount.set(socket.userId.toString(), 0);
-        }
-
-        await chat.save();
-
-        // Notify sender that messages were read
-        if (chat.type === "private" && updatedCount > 0) {
-          const otherUser = chat.participants.find(
-            (p) => p.toString() !== socket.userId.toString()
-          );
-          const otherSocketId = onlineUsers.get(otherUser);
-          if (otherSocketId) {
-            io.to(otherSocketId).emit("messages-read", {
-              chatId: chatId,
-              readBy: socket.userId,
-              messageIds: messageIds,
-            });
-          }
+        const markedCount = await chat.markAsRead(socket.userId, messageIds);
+        
+        if (markedCount > 0) {
+          const roomId = `chat_${chatId}`;
+          socket.to(roomId).emit("messages-read", {
+            chatId: chatId,
+            readBy: socket.userId,
+            messageIds: messageIds
+          });
         }
       }
     } catch (error) {
@@ -332,23 +268,65 @@ io.on("connection", (socket) => {
     }
   });
 
-  // Handle disconnection
+  // Delete message
+  socket.on("delete-message", async ({ chatId, messageId }) => {
+    try {
+      const Chat = require("./models/chat");
+      const chat = await Chat.findOne({
+        _id: chatId,
+        participants: socket.userId
+      });
+
+      if (chat) {
+        await chat.deleteMessage(socket.userId, messageId);
+        
+        const roomId = `chat_${chatId}`;
+        io.to(roomId).emit("message-deleted", {
+          chatId: chatId,
+          messageId: messageId,
+          deletedBy: socket.userId
+        });
+      }
+    } catch (error) {
+      console.error("Error deleting message:", error);
+    }
+  });
+
+  // Get user status
+  socket.on("get-user-status", (userId) => {
+    const isOnline = onlineUsers.has(userId);
+    socket.emit("user-status", {
+      userId: userId,
+      isOnline: isOnline
+    });
+  });
+
+  // Disconnect
   socket.on("disconnect", () => {
-    console.log(`User disconnected: ${socket.userId}`);
+    console.log(`❌ User disconnected: ${socket.userId}`);
     onlineUsers.delete(socket.userId);
+    userSockets.delete(socket.id);
+    
+    if (userChatRooms.has(socket.userId)) {
+      userChatRooms.delete(socket.userId);
+    }
+    
+    socket.broadcast.emit("user-offline", { userId: socket.userId });
   });
 });
 
-// ========= Database Connection to the server
+app.set("io", io);
+global.onlineUsers = onlineUsers;
+
+// Database Connection
 connectDB()
   .then(() => {
-    console.log("Database connection is established...");
+    console.log("✅ Database connection is established...");
     server.listen(3000, () => {
-      // Changed from app.listen to server.listen
-      console.log("The server started successfully!....");
-      console.log("Socket.io is ready for connections");
+      console.log("🚀 Server started successfully on port 3000!");
+      console.log("🔌 Socket.io is ready for connections");
     });
   })
   .catch((err) => {
-    console.error("Database cannot be connected!!");
+    console.error("❌ Database cannot be connected!!", err);
   });
