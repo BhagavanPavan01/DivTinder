@@ -10,9 +10,9 @@
   "type": "commonjs",
   "main": "src/App.js",
   "scripts": {
-    "dev": "nodemon src/app.js",
+    "dev": "nodemon src/App.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node App.js"
+    "start": "node src/App.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
