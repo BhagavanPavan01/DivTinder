@@ -22,31 +22,31 @@ async function areConnected(userId1, userId2) {
 router.get('/chats', userAuth, async (req, res) => {
   try {
     const chats = await Chat.getUserChats(req.user._id);
-    
+
     const formattedChats = [];
-    
+
     for (const chat of chats) {
       // Get the other participant
       const otherUser = chat.participants.find(
         p => p._id.toString() !== req.user._id.toString()
       );
-      
+
       if (!otherUser && chat.type !== 'group') continue;
-      
+
       // For private chats, verify connection status
       let connectionStatus = 'connected';
       if (chat.type === 'private') {
         const isConnected = await areConnected(req.user._id, otherUser._id);
         connectionStatus = isConnected ? 'connected' : 'disconnected';
-        
+
         // Don't show disconnected chats with no messages
         if (!isConnected && chat.messages.length === 0) {
           continue;
         }
       }
-      
+
       const unreadCount = chat.getUnreadCount(req.user._id);
-      
+
       formattedChats.push({
         chatId: chat._id,
         type: chat.type,
@@ -73,14 +73,14 @@ router.get('/chats', userAuth, async (req, res) => {
         isMuted: chat.mutedBy?.some(m => m.userId.toString() === req.user._id.toString() && (!m.until || m.until > new Date()))
       });
     }
-    
+
     // Sort: Pinned first, then by updatedAt
     formattedChats.sort((a, b) => {
       if (a.isPinned && !b.isPinned) return -1;
       if (!a.isPinned && b.isPinned) return 1;
       return new Date(b.updatedAt) - new Date(a.updatedAt);
     });
-    
+
     res.json({
       success: true,
       data: formattedChats
@@ -96,36 +96,36 @@ router.get('/chats/:chatId', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { page = 1, limit = 50 } = req.query;
-    
+
     const chat = await Chat.findOne({
       _id: chatId,
       participants: req.user._id,
       isActive: true
     }).populate('participants', 'firstName lastName photoUrl emailId');
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     // Get other user info for private chats
     const otherUser = chat.type === 'private' ? chat.participants.find(
       p => p._id.toString() !== req.user._id.toString()
     ) : null;
-    
+
     // Check connection status for private chats
     let connectionStatus = 'connected';
     if (chat.type === 'private' && otherUser) {
       const isConnected = await areConnected(req.user._id, otherUser._id);
       connectionStatus = isConnected ? 'connected' : 'disconnected';
     }
-    
+
     // Get messages with pagination (oldest first - for proper display)
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const totalMessages = chat.messages.length;
-    
+
     // Get paginated messages (oldest first)
     const paginatedMessages = chat.messages.slice(skip, skip + parseInt(limit));
-    
+
     // Format messages
     const formattedMessages = paginatedMessages.map(msg => ({
       _id: msg._id,
@@ -140,10 +140,10 @@ router.get('/chats/:chatId', userAuth, async (req, res) => {
       replyTo: msg.replyTo,
       attachments: msg.attachments || []
     }));
-    
+
     // Mark messages as read (background task, don't await)
     chat.markAsRead(req.user._id).catch(console.error);
-    
+
     res.json({
       success: true,
       data: {
@@ -174,26 +174,21 @@ router.get('/chats/:chatId', userAuth, async (req, res) => {
 router.post('/chats/private/:userId', userAuth, async (req, res) => {
   try {
     const { userId } = req.params;
-    
+
     const otherUser = await User.findById(userId).select('firstName lastName photoUrl emailId');
     if (!otherUser) {
       return res.status(404).json({ error: 'User not found' });
     }
-    
-    const isConnected = await areConnected(req.user._id, userId);
-    if (!isConnected) {
-      return res.status(403).json({ 
-        error: 'You can only chat with your accepted connections',
-        code: 'NOT_CONNECTED'
-      });
-    }
-    
+
+    // Bypass connection status checks to allow chatting with anyone
+    const isConnected = true;
+
     const chat = await Chat.findOrCreatePrivateChat(req.user._id, userId);
-    
+
     const otherUserData = chat.participants.find(
       p => p._id.toString() !== req.user._id.toString()
     );
-    
+
     const formattedMessages = chat.messages.map(msg => ({
       _id: msg._id,
       text: msg.text,
@@ -204,7 +199,7 @@ router.post('/chats/private/:userId', userAuth, async (req, res) => {
       isEdited: msg.isEdited || false,
       isDeleted: msg.isDeleted || false
     }));
-    
+
     res.json({
       success: true,
       data: {
@@ -226,37 +221,26 @@ router.post('/chats/:chatId/messages', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { text, replyTo, attachments } = req.body;
-    
+
     if ((!text || !text.trim()) && (!attachments || attachments.length === 0)) {
       return res.status(400).json({ error: 'Message text or attachment is required' });
     }
-    
+
     const chat = await Chat.findById(chatId);
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     if (!chat.participants.includes(req.user._id)) {
       return res.status(403).json({ error: 'You are not a participant in this chat' });
     }
-    
-    // For private chats, verify connection still exists
-    if (chat.type === 'private') {
-      const otherUserId = chat.participants.find(id => id.toString() !== req.user._id.toString());
-      const isConnected = await areConnected(req.user._id, otherUserId);
-      
-      if (!isConnected) {
-        return res.status(403).json({ 
-          error: 'You are no longer connected with this user',
-          code: 'NOT_CONNECTED'
-        });
-      }
-    }
-    
+
+    // Bypass connection status checks to send messages to anyone
+
     const newMessage = await chat.addMessage(req.user._id, text?.trim() || '', replyTo, attachments || []);
     const sender = await User.findById(req.user._id).select('firstName lastName photoUrl');
-    
+
     res.json({
       success: true,
       data: {
@@ -284,19 +268,19 @@ router.put('/chats/:chatId/read', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { messageIds } = req.body;
-    
+
     const chat = await Chat.findOne({
       _id: chatId,
       participants: req.user._id,
       isActive: true
     });
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     const markedCount = await chat.markAsRead(req.user._id, messageIds);
-    
+
     res.json({
       success: true,
       message: `${markedCount} messages marked as read`,
@@ -313,19 +297,19 @@ router.put('/chats/:chatId/delivered', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { messageIds } = req.body;
-    
+
     const chat = await Chat.findOne({
       _id: chatId,
       participants: req.user._id,
       isActive: true
     });
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     const markedCount = await chat.markAsDelivered(req.user._id, messageIds);
-    
+
     res.json({
       success: true,
       message: `${markedCount} messages marked as delivered`,
@@ -341,19 +325,19 @@ router.put('/chats/:chatId/delivered', userAuth, async (req, res) => {
 router.delete('/chats/:chatId/messages/:messageId', userAuth, async (req, res) => {
   try {
     const { chatId, messageId } = req.params;
-    
+
     const chat = await Chat.findOne({
       _id: chatId,
       participants: req.user._id,
       isActive: true
     });
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     const deletedMessage = await chat.deleteMessage(req.user._id, messageId);
-    
+
     res.json({
       success: true,
       message: 'Message deleted successfully',
@@ -370,17 +354,17 @@ router.put('/chats/:chatId/pin', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { pin } = req.body; // true = pin, false = unpin
-    
+
     const chat = await Chat.findOne({
       _id: chatId,
       participants: req.user._id,
       isActive: true
     });
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     if (pin) {
       if (!chat.pinnedBy.includes(req.user._id)) {
         chat.pinnedBy.push(req.user._id);
@@ -388,9 +372,9 @@ router.put('/chats/:chatId/pin', userAuth, async (req, res) => {
     } else {
       chat.pinnedBy = chat.pinnedBy.filter(id => id.toString() !== req.user._id.toString());
     }
-    
+
     await chat.save();
-    
+
     res.json({
       success: true,
       message: pin ? 'Chat pinned' : 'Chat unpinned'
@@ -406,21 +390,21 @@ router.put('/chats/:chatId/mute', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
     const { mute, until } = req.body; // mute: true/false, until: Date (optional)
-    
+
     const chat = await Chat.findOne({
       _id: chatId,
       participants: req.user._id,
       isActive: true
     });
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     if (mute) {
       const muteUntil = until ? new Date(until) : new Date(Date.now() + 8 * 60 * 60 * 1000); // Default 8 hours
       const existingMute = chat.mutedBy.find(m => m.userId.toString() === req.user._id.toString());
-      
+
       if (existingMute) {
         existingMute.until = muteUntil;
       } else {
@@ -429,9 +413,9 @@ router.put('/chats/:chatId/mute', userAuth, async (req, res) => {
     } else {
       chat.mutedBy = chat.mutedBy.filter(m => m.userId.toString() !== req.user._id.toString());
     }
-    
+
     await chat.save();
-    
+
     res.json({
       success: true,
       message: mute ? 'Chat muted' : 'Chat unmuted'
@@ -446,33 +430,83 @@ router.put('/chats/:chatId/mute', userAuth, async (req, res) => {
 router.delete('/chats/:chatId', userAuth, async (req, res) => {
   try {
     const { chatId } = req.params;
-    
+
     const chat = await Chat.findOne({
       _id: chatId,
       participants: req.user._id
     });
-    
+
     if (!chat) {
       return res.status(404).json({ error: 'Chat not found' });
     }
-    
+
     // Archive instead of delete (soft delete)
     if (!chat.archivedBy) {
       chat.archivedBy = [];
     }
-    
+
     if (!chat.archivedBy.includes(req.user._id)) {
       chat.archivedBy.push(req.user._id);
     }
-    
+
     await chat.save();
-    
+
     res.json({
       success: true,
       message: 'Chat archived successfully'
     });
   } catch (error) {
     console.error('Error archiving chat:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/chats/group - Create a group chat
+router.post('/chats/group', userAuth, async (req, res) => {
+  try {
+    const { name, participantIds, avatar } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: 'Group name is required' });
+    }
+
+    if (!participantIds || !Array.isArray(participantIds) || participantIds.length === 0) {
+      return res.status(400).json({ error: 'At least one participant is required' });
+    }
+
+    // Ensure current user is in participants list
+    const participants = Array.from(
+      new Set([...participantIds.map(id => id.toString()), req.user._id.toString()])
+    ).sort();
+
+    const chat = new Chat({
+      participants,
+      type: 'group',
+      groupName: name.trim(),
+      groupAvatar: avatar || `https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(name)}`,
+      groupAdmin: req.user._id,
+      groupAdmins: [req.user._id],
+      messages: [],
+      unreadCount: new Map()
+    });
+
+    await chat.save();
+    await chat.populate('participants', 'firstName lastName photoUrl emailId');
+
+    res.json({
+      success: true,
+      data: {
+        chatId: chat._id,
+        type: chat.type,
+        groupName: chat.groupName,
+        groupAvatar: chat.groupAvatar,
+        groupAdmins: chat.groupAdmins,
+        participants: chat.participants,
+        messages: []
+      }
+    });
+  } catch (error) {
+    console.error('Error creating group chat:', error);
     res.status(500).json({ error: error.message });
   }
 });

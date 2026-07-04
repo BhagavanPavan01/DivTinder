@@ -52,13 +52,13 @@ console.log("JWT_SECRET loaded:", process.env.JWT_SECRET ? "✅ YES" : "❌ NO")
 io.use((socket, next) => {
   // Try multiple ways to get the token
   let token = null;
-  
+
   // 1. Try from auth object (most common for socket.io)
   if (socket.handshake.auth && socket.handshake.auth.token) {
     token = socket.handshake.auth.token;
     console.log("Token found in auth");
   }
-  
+
   // 2. Try from headers Authorization
   if (!token && socket.handshake.headers.authorization) {
     const authHeader = socket.handshake.headers.authorization;
@@ -67,7 +67,7 @@ io.use((socket, next) => {
       console.log("Token found in Authorization header");
     }
   }
-  
+
   // 3. Try from cookies
   if (!token && socket.handshake.headers.cookie) {
     const cookies = socket.handshake.headers.cookie;
@@ -77,7 +77,7 @@ io.use((socket, next) => {
       console.log("Token found in cookies");
     }
   }
-  
+
   if (!token) {
     console.log('❌ No token provided for socket connection');
     return next(new Error("Authentication error: No token provided"));
@@ -89,7 +89,7 @@ io.use((socket, next) => {
       console.error('❌ JWT_SECRET not found in environment variables!');
       return next(new Error("Server configuration error"));
     }
-    
+
     const decoded = jwt.verify(token, JWT_SECRET);
     socket.userId = decoded._id;
     console.log(`✅ Socket authenticated for user: ${socket.userId}`);
@@ -110,7 +110,7 @@ io.on("connection", (socket) => {
   console.log(`✅ User connected: ${socket.userId}`);
   onlineUsers.set(socket.userId, socket.id);
   userSockets.set(socket.id, socket.userId);
-  
+
   socket.broadcast.emit("user-online", { userId: socket.userId });
   socket.join(`user_${socket.userId}`);
 
@@ -122,7 +122,7 @@ io.on("connection", (socket) => {
         participants: socket.userId,
         isActive: true
       });
-      
+
       for (const chat of userChats) {
         const roomId = `chat_${chat._id}`;
         socket.join(roomId);
@@ -179,24 +179,8 @@ io.on("connection", (socket) => {
         return;
       }
 
-      if (chat.type === "private") {
-        const otherUserId = chat.participants.find(id => id.toString() !== fromUserId.toString());
-        const connection = await ConnectionRequest.findOne({
-          $or: [
-            { fromUserId: fromUserId, toUserId: otherUserId, status: "accepted" },
-            { fromUserId: otherUserId, toUserId: fromUserId, status: "accepted" }
-          ]
-        });
-
-        if (!connection) {
-          socket.emit("message-error", {
-            tempId,
-            error: "You are no longer connected",
-            code: "NOT_CONNECTED"
-          });
-          return;
-        }
-      }
+      // Bypass connection status checks to allow chatting with anyone
+      const connection = true;
 
       const savedMessage = await chat.addMessage(fromUserId, text, replyTo);
       const sender = await User.findById(fromUserId).select("firstName lastName photoUrl");
@@ -253,7 +237,7 @@ io.on("connection", (socket) => {
 
       if (chat) {
         const markedCount = await chat.markAsRead(socket.userId, messageIds);
-        
+
         if (markedCount > 0) {
           const roomId = `chat_${chatId}`;
           socket.to(roomId).emit("messages-read", {
@@ -279,7 +263,7 @@ io.on("connection", (socket) => {
 
       if (chat) {
         await chat.deleteMessage(socket.userId, messageId);
-        
+
         const roomId = `chat_${chatId}`;
         io.to(roomId).emit("message-deleted", {
           chatId: chatId,
@@ -306,11 +290,11 @@ io.on("connection", (socket) => {
     console.log(`❌ User disconnected: ${socket.userId}`);
     onlineUsers.delete(socket.userId);
     userSockets.delete(socket.id);
-    
+
     if (userChatRooms.has(socket.userId)) {
       userChatRooms.delete(socket.userId);
     }
-    
+
     socket.broadcast.emit("user-offline", { userId: socket.userId });
   });
 });
@@ -318,12 +302,30 @@ io.on("connection", (socket) => {
 app.set("io", io);
 global.onlineUsers = onlineUsers;
 
-// Database Connection
+// =========Database Connection this is for normal development phase in localhost
+
+// connectDB()
+//   .then(() => {
+//     console.log("✅ Database connection is established...");
+//     server.listen(3000, () => {
+//       console.log("🚀 Server started successfully on port 3000!");
+//       console.log("🔌 Socket.io is ready for connections");
+//     });
+//   })
+//   .catch((err) => {
+//     console.error("❌ Database cannot be connected!!", err);
+//   });
+
+
+// =========Database Connection  this is for Render .env configuration
+const PORT = process.env.PORT || 3000;
+
 connectDB()
   .then(() => {
     console.log("✅ Database connection is established...");
-    server.listen(3000, () => {
-      console.log("🚀 Server started successfully on port 3000!");
+
+    server.listen(PORT, () => {
+      console.log(`🚀 Server started successfully on port ${PORT}!`);
       console.log("🔌 Socket.io is ready for connections");
     });
   })
