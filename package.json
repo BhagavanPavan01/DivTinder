@@ -8,11 +8,11 @@
   "license": "ISC",
   "author": "Pavan",
   "type": "commonjs",
-  "main": "src/App.js",
+  "main": "src/app.js",
   "scripts": {
-    "dev": "nodemon src/App.js",
+    "dev": "nodemon src/app.js",
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node src/App.js"
+    "start": "node src/app.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
