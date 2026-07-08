@@ -5,21 +5,20 @@ const connectDB = async () => {
     try {
         await mongoose.connect(process.env.MONGO_URI, {
             serverSelectionTimeoutMS: 5000,
-            socketTimeoutMS: 45000,
-            family: 4
+            socketTimeoutMS: 45000
         });
-        
+
         console.log("✅ Database connection is established...");
-        
+
         // Drop existing indexes and recreate them (fixes duplicate key issues)
         try {
             // Get the Chat model
             const ChatModel = mongoose.model('Chat');
-            
+
             // Drop all indexes
             await ChatModel.collection.dropIndexes();
             console.log("✅ Dropped existing indexes");
-            
+
             // Recreate indexes
             await Chat.syncIndexes();
             console.log("✅ Chat indexes recreated successfully");
@@ -30,7 +29,7 @@ const connectDB = async () => {
             } else {
                 console.error("⚠️ Error handling indexes:", indexError.message);
             }
-            
+
             // Try to sync indexes anyway
             try {
                 await Chat.syncIndexes();
@@ -39,20 +38,20 @@ const connectDB = async () => {
                 console.error("⚠️ Error syncing indexes:", syncError.message);
             }
         }
-        
+
         // Handle connection events
         mongoose.connection.on('error', (err) => {
             console.error('❌ MongoDB connection error:', err);
         });
-        
+
         mongoose.connection.on('disconnected', () => {
             console.log('⚠️ MongoDB disconnected');
         });
-        
+
         mongoose.connection.on('reconnected', () => {
             console.log('✅ MongoDB reconnected');
         });
-        
+
     } catch (err) {
         console.error("❌ Database cannot be connected!!", err.message);
         throw err;
