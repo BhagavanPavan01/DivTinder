@@ -9,13 +9,13 @@ const userAuth = async (req, res, next) => {
             throw new Error("Invalid Token...!");
         }
         // validate the token
-        const decodedData = await jwt.verify(token, "PavanDiveTinder@token$420");
+        const decodedData = await jwt.verify(token, process.env.JWT_SECRET);
         const { _id } = decodedData;
         // console.log("Logged In user is: " + _id);    // To check the user id in DB
- 
+
         const user = await User.findById(_id);
 
-   
+
         if (!user) {
             throw new Error("Please Try again...!");
         }

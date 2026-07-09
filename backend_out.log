@@ -1,0 +1,32 @@
+
+> divtinder-backend@1.0.0 start
+> node src/app.js
+
+[dotenv@17.2.4] injecting env (5) from .env -- tip: ⚙️  override existing env vars with { override: true }
+JWT_SECRET loaded: ✅ YES
+✅ Database connection is established...
+✅ Dropped existing indexes
+⚠️ Error handling indexes: Index build failed: 6bef9584-6cea-4a38-bcb9-87a840980fd9: Collection test.chats ( 8ffc05cf-70ff-4422-8627-9e88233a8021 ) :: caused by :: E11000 duplicate key error collection: test.chats index: participants_1_type_1 dup key: { participants: ObjectId('695ccfc6f5e7ee853faa0afd'), type: "private" }
+⚠️ Error syncing indexes: Index build failed: c82861c6-8369-4ec6-9837-2dabfe3e8a1f: Collection test.chats ( 8ffc05cf-70ff-4422-8627-9e88233a8021 ) :: caused by :: E11000 duplicate key error collection: test.chats index: participants_1_type_1 dup key: { participants: ObjectId('695ccfc6f5e7ee853faa0afd'), type: "private" }
+✅ Database connection is established...
+node:events:502
+      throw er; // Unhandled 'error' event
+      ^
+
+Error: listen EADDRINUSE: address already in use :::3000
+    at Server.setupListenHandle [as _listen2] (node:net:1937:16)
+    at listenInCluster (node:net:1994:12)
+    at Server.listen (node:net:2099:7)
+    at E:\codings\divTinder-backend\src\app.js:327:12
+    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)
+Emitted 'error' event on Server instance at:
+    at emitErrorNT (node:net:1973:8)
+    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {
+  code: 'EADDRINUSE',
+  errno: -4091,
+  syscall: 'listen',
+  address: '::',
+  port: 3000
+}
+
+Node.js v22.13.1
