@@ -1,7 +1,7 @@
 const express = require("express")
 const { userAuth } = require("../middlewares/auth");
 const profileRouter = express.Router();
-const {validateEditProfileData} = require("../utils/validator");
+const { validateEditProfileData } = require("../utils/validator");
 const crypto = require("crypto");
 const User = require("../models/user");
 const bcrypt = require("bcrypt");
@@ -10,12 +10,29 @@ const bcrypt = require("bcrypt");
 // =============== User Profile API to retrieve the user data from DB.
 //                => userAuth is a middle ware it will check user authentication using the JWT Token
 
-profileRouter.get("/profile/view",userAuth ,async(req,res) => {
-  try{
+profileRouter.get("/profile/view", userAuth, async (req, res) => {
+  try {
     // Take the user data from ./middlewares/auth" 
     const user = req.user;
     res.send(user);
-  }  catch (err) {
+  } catch (err) {
+    res.status(400).send("Error :" + err.message);
+  }
+});
+
+
+// ======================= User Profile API to retrieve a specific user's data from DB.
+profileRouter.get("/profile/user/:userId", userAuth, async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const user = await User.findById(userId).select("-password -resetPasswordToken -resetPasswordExpires");
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+
+    res.json(user);
+  } catch (err) {
     res.status(400).send("Error :" + err.message);
   }
 });
@@ -24,15 +41,15 @@ profileRouter.get("/profile/view",userAuth ,async(req,res) => {
 // ======================= User Profile data Editing
 
 profileRouter.patch("/profile/edit", userAuth, async (req, res) => {
-  try{
+  try {
     if (!validateEditProfileData(req)) {
-      throw new Error ("Invalid Edit Request");
+      throw new Error("Invalid Edit Request");
     }
     const loggedInUser = req.user;
     Object.keys(req.body).forEach((key) => (loggedInUser[key] = req.body[key]));
     await loggedInUser.save();
     res.send(`${loggedInUser.lastName}, your profile updated successfully`);
-  }catch(err){
+  } catch (err) {
     res.status(400).send("ERROR : " + err.message);
   }
 });

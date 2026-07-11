@@ -1265,3 +1265,84 @@ npm start
 
 **Latest Update**: February 2026  
 **Version**: 1.0.0
+
+---
+
+## 💬 Chat APIs
+
+- **Base URL**: `http://localhost:3000`
+- **Chat route prefix**: `/api` (chat endpoints are mounted at `/api`)
+
+### Endpoints
+- `GET /api/chats` — Get all chats for the logged-in user (pinned first, then recent). Requires authentication.
+- `GET /api/chats/:chatId` — Get a specific chat and paginated messages. Query params: `page`, `limit`.
+- `POST /api/chats/private/:userId` — Create or get a private chat with `:userId` (returns messages and chat meta).
+- `POST /api/chats/:chatId/messages` — Send a message to a chat. Body: `{ text, replyTo, attachments }`.
+- `PUT /api/chats/:chatId/read` — Mark messages as read. Body: `{ messageIds }`.
+- `PUT /api/chats/:chatId/delivered` — Mark messages as delivered. Body: `{ messageIds }`.
+- `DELETE /api/chats/:chatId/messages/:messageId` — Soft-delete a message (owner only).
+- `PUT /api/chats/:chatId/pin` — Pin/unpin a chat. Body: `{ pin: true|false }`.
+- `PUT /api/chats/:chatId/mute` — Mute/unmute a chat. Body: `{ mute: true|false, until: Date (optional) }`.
+- `DELETE /api/chats/:chatId` — Archive (soft-delete) chat for the logged-in user.
+- `DELETE /api/chats/:chatId/delete` — Permanently delete a chat (server-side removal).
+- `POST /api/chats/group` — Create a group chat. Body: `{ name, participantIds, avatar }`.
+
+Notes:
+- All chat HTTP endpoints require authentication (JWT). The project accepts the token in cookies or `Authorization: Bearer <token>` header.
+- Message creation supports `attachments` array (image/video/document/audio) and `replyTo` for threading.
+- Responses include helpful fields: `lastMessage`, `unreadCount`, `isPinned`, `isMuted`, and `connectionStatus` for private chats.
+
+### Examples
+Create/get private chat (cURL):
+```bash
+curl -X POST http://localhost:3000/api/chats/private/<USER_ID> \
+  -H "Content-Type: application/json" \
+  -b cookies.txt
+```
+
+Send message (cURL):
+```bash
+curl -X POST http://localhost:3000/api/chats/<CHAT_ID>/messages \
+  -H "Content-Type: application/json" \
+  -b cookies.txt \
+  -d '{"text":"Hello!"}'
+```
+
+## 🔌 Socket (Realtime) Events
+
+The backend exposes Socket.IO realtime events to support typing indicators, optimistic UI, delivery/read receipts, and presence.
+
+Authentication:
+- Provide a valid JWT when establishing the socket connection. The server accepts the token via `socket.handshake.auth.token`, `Authorization: Bearer <token>` header, or `cookie` header containing `token=`.
+
+Client-side events (emit):
+- `join-chat-room` — Join a chat room: payload `chatId`.
+- `leave-chat-room` — Leave a chat room: payload `chatId`.
+- `send-message` — Send a chat message: `{ chatId, text, replyTo, tempId }`.
+- `typing-start` / `typing-end` — Typing indicators: `{ chatId, toUserId? }`.
+- `mark-read` — Mark messages read: `{ chatId, messageIds }`.
+- `delete-message` — Delete a message: `{ chatId, messageId }`.
+- `get-user-status` — Request a user's online status: payload is `userId`.
+
+Server-side events (listen):
+- `message-sent` — Confirmation that a message was saved (returns full message data).
+- `message-error` — Error while sending message (includes `tempId` for client reconciliation).
+- `new-private-message` / `new-global-message` — New message delivered to recipients.
+- `message-update` — Chat-level update (useful for refreshing chat list/unread counts).
+- `user-typing` — Typing indicator from other users.
+- `messages-read` — Notification that messages were read by recipient(s).
+- `message-deleted` — Notification for deleted messages.
+- `user-online` / `user-offline` — Presence notifications.
+
+Tips:
+- Use `tempId` from the client for optimistic UI; the server returns `tempId` in confirmations to reconcile states.
+- Rooms naming used by the server: `chat_<CHAT_ID>` for chat rooms and `user_<USER_ID>` for per-user sockets.
+
+## ✨ New Chat Features (Highlights)
+
+- Full chat system with private & group chats, message attachments, read/delivered receipts, and optimistic UI support.
+- Message soft-delete with preserved conversation context and last-message fallback text.
+- Pin / Mute / Archive conversations per-user.
+- Bulk mark-as-read and mark-as-delivered endpoints for synchronization.
+- Socket.IO-based presence and typing indicators, with multiple token intake methods for flexibility.
+- Group creation endpoint with auto-generated avatar fallback.

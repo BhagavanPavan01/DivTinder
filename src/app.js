@@ -194,11 +194,24 @@ io.on("connection", (socket) => {
         chatId: chat._id,
         tempId: tempId,
         replyTo: savedMessage.replyTo,
-        isOwn: true
+        isOwn: true,
+        isRead: false,
+        isDelivered: false,
+        isEdited: false,
+        isDeleted: false
       };
 
-      const roomId = `chat_${chat._id}`;
-      io.to(roomId).emit("new-message", messageData);
+      if (chat.type === 'private') {
+        for (const participantId of chat.participants) {
+          if (participantId.toString() !== fromUserId.toString()) {
+            io.to(`user_${participantId}`).emit('new-private-message', messageData);
+          }
+        }
+      } else {
+        const roomId = `chat_${chat._id}`;
+        socket.to(roomId).emit('new-global-message', messageData);
+      }
+
       socket.emit("message-sent", messageData);
 
     } catch (error) {
@@ -208,22 +221,30 @@ io.on("connection", (socket) => {
   });
 
   // Typing indicators
-  socket.on("typing-start", ({ chatId }) => {
-    const roomId = `chat_${chatId}`;
-    socket.to(roomId).emit("user-typing", {
-      userId: socket.userId,
+  socket.on("typing-start", ({ chatId, toUserId }) => {
+    const payload = {
+      fromUserId: socket.userId,
       chatId: chatId,
       isTyping: true
-    });
+    };
+    if (toUserId) {
+      io.to(`user_${toUserId}`).emit("user-typing", payload);
+    } else {
+      socket.to(`chat_${chatId}`).emit("user-typing", payload);
+    }
   });
 
-  socket.on("typing-end", ({ chatId }) => {
-    const roomId = `chat_${chatId}`;
-    socket.to(roomId).emit("user-typing", {
-      userId: socket.userId,
+  socket.on("typing-end", ({ chatId, toUserId }) => {
+    const payload = {
+      fromUserId: socket.userId,
       chatId: chatId,
       isTyping: false
-    });
+    };
+    if (toUserId) {
+      io.to(`user_${toUserId}`).emit("user-typing", payload);
+    } else {
+      socket.to(`chat_${chatId}`).emit("user-typing", payload);
+    }
   });
 
   // Mark as read

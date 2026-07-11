@@ -132,8 +132,12 @@ router.get('/chats/:chatId', userAuth, async (req, res) => {
       text: msg.text,
       senderId: msg.senderId,
       createdAt: msg.createdAt,
-      isRead: msg.readBy?.some(r => r.userId?.toString() === req.user._id.toString()) || false,
-      isDelivered: msg.deliveredTo?.some(d => d.userId?.toString() === req.user._id.toString()) || false,
+      isRead: msg.senderId?.toString() === req.user._id.toString()
+        ? msg.readBy?.some(r => r.userId?.toString() !== req.user._id.toString())
+        : msg.readBy?.some(r => r.userId?.toString() === req.user._id.toString()),
+      isDelivered: msg.senderId?.toString() === req.user._id.toString()
+        ? msg.deliveredTo?.some(d => d.userId?.toString() !== req.user._id.toString())
+        : msg.deliveredTo?.some(d => d.userId?.toString() === req.user._id.toString()),
       isOwn: msg.senderId?.toString() === req.user._id.toString(),
       isEdited: msg.isEdited || false,
       isDeleted: msg.isDeleted || false,
@@ -194,7 +198,9 @@ router.post('/chats/private/:userId', userAuth, async (req, res) => {
       text: msg.text,
       senderId: msg.senderId,
       createdAt: msg.createdAt,
-      isRead: msg.readBy?.some(r => r.userId?.toString() === req.user._id.toString()) || false,
+      isRead: msg.senderId?.toString() === req.user._id.toString()
+        ? msg.readBy?.some(r => r.userId?.toString() !== req.user._id.toString())
+        : msg.readBy?.some(r => r.userId?.toString() === req.user._id.toString()),
       isOwn: msg.senderId?.toString() === req.user._id.toString(),
       isEdited: msg.isEdited || false,
       isDeleted: msg.isDeleted || false
@@ -457,6 +463,33 @@ router.delete('/chats/:chatId', userAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('Error archiving chat:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// DELETE /api/chats/:chatId/delete - Permanent delete chat
+router.delete('/chats/:chatId/delete', userAuth, async (req, res) => {
+  try {
+    const { chatId } = req.params;
+
+    const chat = await Chat.findOne({
+      _id: chatId,
+      participants: req.user._id
+    });
+
+    if (!chat) {
+      return res.status(404).json({ error: 'Chat not found' });
+    }
+
+    // Permanently delete the chat
+    await Chat.findByIdAndDelete(chatId);
+
+    res.json({
+      success: true,
+      message: 'Chat permanently deleted'
+    });
+  } catch (error) {
+    console.error('Error permanently deleting chat:', error);
     res.status(500).json({ error: error.message });
   }
 });

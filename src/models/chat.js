@@ -136,66 +136,18 @@ chatSchema.index({ participants: 1 });
 chatSchema.index({ updatedAt: -1 });
 chatSchema.index({ 'lastMessage.timestamp': -1 });
 
-// Unique index for private chats (one chat per pair)
-chatSchema.index({ participants: 1, type: 1 }, {
-  unique: true,
-  partialFilterExpression: { type: 'private' }
-});
+// Unique index removed because a multikey index with unique:true on participants limits users to only 1 private chat.
 
-// Method to add a new message - FIXED
-chatSchema.methods.addMessage = async function(senderId, text, replyTo = null, attachments = []) {
-  const User = mongoose.model('User');
-  
-  const newMessage = {
-    senderId: senderId,
-    text: text,
-    readBy: [{ userId: senderId, readAt: new Date() }],
-    deliveredTo: [{ userId: senderId, deliveredAt: new Date() }],
-    replyTo: replyTo,
-    attachments: attachments,
-    createdAt: new Date()
-  };
-  
-  this.messages.push(newMessage);
-  
-  // Update last message
-  const sender = await User.findById(senderId).select('firstName lastName');
-  this.lastMessage = {
-    text: text,
-    senderId: senderId,
-    senderName: sender ? `${sender.firstName} ${sender.lastName}` : 'Unknown',
-    timestamp: new Date(),
-    isDeleted: false
-  };
-  
-  // Increment unread count for all participants except sender
-  for (const participantId of this.participants) {
-    if (participantId.toString() !== senderId.toString()) {
-      const currentUnread = this.unreadCount.get(participantId.toString()) || 0;
-      this.unreadCount.set(participantId.toString(), currentUnread + 1);
-    }
-  }
-  
-  this.updatedAt = new Date();
-  
-  try {
-    await this.save();
-    return this.messages[this.messages.length - 1];
-  } catch (error) {
-    console.error('Error saving message:', error);
-    throw error;
-  }
-};
 
 // Method to mark messages as delivered
-chatSchema.methods.markAsDelivered = async function(userId, messageIds = null) {
+chatSchema.methods.markAsDelivered = async function (userId, messageIds = null) {
   let updatedCount = 0;
-  
+
   for (const message of this.messages) {
     if (message.senderId.toString() === userId.toString()) continue;
-    
+
     const alreadyDelivered = message.deliveredTo.some(d => d.userId.toString() === userId.toString());
-    
+
     if (!alreadyDelivered && (!messageIds || messageIds.includes(message._id.toString()))) {
       message.deliveredTo.push({
         userId: userId,
@@ -204,23 +156,23 @@ chatSchema.methods.markAsDelivered = async function(userId, messageIds = null) {
       updatedCount++;
     }
   }
-  
+
   if (updatedCount > 0) {
     await this.save();
   }
-  
+
   return updatedCount;
 };
 
 // Method to mark messages as read
-chatSchema.methods.markAsRead = async function(userId, messageIds = null) {
+chatSchema.methods.markAsRead = async function (userId, messageIds = null) {
   let updatedCount = 0;
-  
+
   for (const message of this.messages) {
     if (message.senderId.toString() === userId.toString()) continue;
-    
+
     const alreadyRead = message.readBy.some(r => r.userId.toString() === userId.toString());
-    
+
     if (!alreadyRead && (!messageIds || messageIds.includes(message._id.toString()))) {
       message.readBy.push({
         userId: userId,
@@ -229,89 +181,93 @@ chatSchema.methods.markAsRead = async function(userId, messageIds = null) {
       updatedCount++;
     }
   }
-  
+
   this.unreadCount.set(userId.toString(), 0);
-  
+
   if (updatedCount > 0) {
     await this.save();
   }
-  
+
   return updatedCount;
 };
 
 // Method to get unread count
-chatSchema.methods.getUnreadCount = function(userId) {
+chatSchema.methods.getUnreadCount = function (userId) {
   return this.unreadCount.get(userId.toString()) || 0;
 };
 
 // Method to delete message (soft delete)
-chatSchema.methods.deleteMessage = async function(userId, messageId) {
+chatSchema.methods.deleteMessage = async function (userId, messageId) {
   const message = this.messages.id(messageId);
   if (!message) {
     throw new Error('Message not found');
   }
-  
+
   if (message.senderId.toString() !== userId.toString()) {
     throw new Error('You can only delete your own messages');
   }
-  
+
   const messageAge = Date.now() - new Date(message.createdAt).getTime();
-  const fiveMinutes = 5 * 60 * 1000;
-  
-  if (messageAge > fiveMinutes) {
-    throw new Error('Messages can only be deleted within 5 minutes');
-  }
-  
+
+  // Removed the 5-minute restriction to allow users to delete messages anytime
+
+
   message.text = 'This message was deleted';
   message.isDeleted = true;
   message.attachments = [];
-  
+
   // Update last message if this was the last one
   if (this.lastMessage && this.lastMessage.timestamp === message.createdAt) {
     this.lastMessage.text = 'This message was deleted';
     this.lastMessage.isDeleted = true;
   }
-  
+
   await this.save();
   return message;
 };
 
 // Static method to find or create private chat
-chatSchema.statics.findOrCreatePrivateChat = async function(userId1, userId2) {
-  const participants = [userId1, userId2].sort();
-  
-  let chat = await this.findOne({
-    type: 'private',
-    participants: { $all: participants, $size: 2 },
-    isActive: true
-  }).populate('participants', 'firstName lastName photoUrl emailId');
-  
-  if (!chat) {
-    chat = new this({
-      participants: participants,
+chatSchema.statics.findOrCreatePrivateChat = async function (userId1, userId2) {
+  const p1 = userId1.toString();
+  const p2 = userId2.toString();
+  const participantsStrings = [p1, p2].sort();
+  const participants = participantsStrings.map(id => new mongoose.Types.ObjectId(id));
+
+  let chat = await this.findOneAndUpdate(
+    {
       type: 'private',
-      messages: [],
-      unreadCount: new Map()
-    });
-    await chat.save();
-    await chat.populate('participants', 'firstName lastName photoUrl emailId');
-  }
-  
+      participants: participants,
+    },
+    {
+      $setOnInsert: {
+        participants: participants,
+        type: 'private',
+        messages: [],
+        unreadCount: new Map()
+      }
+    },
+    {
+      new: true,
+      upsert: true,
+      setDefaultsOnInsert: true
+    }
+  ).populate('participants', 'firstName lastName photoUrl emailId');
+
   return chat;
 };
 
 // Static method to get user's chats
-chatSchema.statics.getUserChats = async function(userId) {
+chatSchema.statics.getUserChats = async function (userId) {
   return await this.find({
     participants: userId,
     isActive: true
   })
-  .populate('participants', 'firstName lastName photoUrl emailId')
-  .sort({ updatedAt: -1 });
+    .populate('participants', 'firstName lastName photoUrl emailId')
+    .sort({ updatedAt: -1 });
 };
 
 // Method to add a new message - FIXED
-chatSchema.methods.addMessage = async function(senderId, text, replyTo = null, attachments = []) {
+chatSchema.methods.addMessage = async function (senderId, text, replyTo = null, attachments = []) {
   // Don't try to fetch User model here to avoid circular dependency
   const newMessage = {
     senderId: senderId,
@@ -322,9 +278,9 @@ chatSchema.methods.addMessage = async function(senderId, text, replyTo = null, a
     attachments: attachments,
     createdAt: new Date()
   };
-  
+
   this.messages.push(newMessage);
-  
+
   // Update last message without fetching User
   this.lastMessage = {
     text: text,
@@ -333,7 +289,7 @@ chatSchema.methods.addMessage = async function(senderId, text, replyTo = null, a
     timestamp: new Date(),
     isDeleted: false
   };
-  
+
   // Increment unread count for all participants except sender
   for (const participantId of this.participants) {
     if (participantId.toString() !== senderId.toString()) {
@@ -341,9 +297,9 @@ chatSchema.methods.addMessage = async function(senderId, text, replyTo = null, a
       this.unreadCount.set(participantId.toString(), currentUnread + 1);
     }
   }
-  
+
   this.updatedAt = new Date();
-  
+
   try {
     await this.save();
     return this.messages[this.messages.length - 1];
